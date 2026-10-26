@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<!-- LeaderAI · salchiarenza.ai -->
+<!-- BBC Presenze, pagina del vocale del giornale di cantiere. Sta su un indirizzo web vero
+     (non dentro il riquadro di Google, che non da' il microfono): la apre il tasto
+     «DILLO A VOCE» dell'app con i dati dopo il # (operaio, cantiere, giorno, ore), che
+     non vengono mandati al sito. Registra e manda il giornale al foglio «BBC Presenze»
+     con un POST all'indirizzo /exec (doPost con il codice dell'operaio). -->
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>BBC - Vocale</title>
+<style>
+  body { margin: 0; background: #f4f1ea; color: #1c2a4a; font: 17px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+  .p { max-width: 520px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font: 700 30px/1 Georgia, serif; letter-spacing: 6px; text-align: center; margin: 8px 0 18px; }
+  .s { background: #fff; border: 1px solid #ddd6c8; border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+  button { font: inherit; border: 0; border-radius: 12px; cursor: pointer; width: 100%; min-height: 72px; font-size: 22px; font-weight: 700; color: #fff; background: #b08d57; margin: 8px 0; }
+  button.r { background: #9b2c22; }
+  button.m { background: #1c2a4a; }
+  button.c { background: #fff; color: #1c2a4a; border: 1px solid #ddd6c8; min-height: 52px; font-size: 17px; }
+  button:disabled { opacity: .4; }
+  .n { color: #5b6575; font-size: 15px; }
+  input { font: inherit; font-size: 22px; width: 120px; padding: 8px; border: 1px solid #ddd6c8; border-radius: 8px; margin-top: 4px; }
+  audio { width: 100%; margin-top: 8px; }
+  .ok { background: #e2efe5; }
+  .ko { background: #f6d5d1; }
+</style>
+</head>
+<body>
+<div class="p">
+  <h1>BBC</h1>
+  <div class="s">
+    <b id="chi"></b><div class="n" id="dove"></div>
+    <label class="n" style="display:block;margin-top:10px">Ore lavorate oggi in questo cantiere<br>
+      <input id="ore" type="number" step="0.25" min="0.25" max="12" inputmode="decimal"></label>
+  </div>
+  <div class="n">Di' cosa hai fatto oggi e quante ore per ogni lavoro (per esempio: «4 ore massetto, 4 ore piastrelle al bagno»). Se manca materiale, dillo. Massimo 3 minuti.</div>
+  <button id="reg">🎤 REGISTRA</button>
+  <div id="pronto" style="display:none">
+    <audio id="aud" controls></audio>
+    <button id="manda" class="m">MANDA IL VOCALE</button>
+    <button id="rifai" class="c">Rifai</button>
+  </div>
+  <div id="esito" class="s" style="display:none"></div>
+</div>
+<script>
+(function () {
+  // indirizzo dell'app BBC Presenze (foglio Google «BBC Presenze», deployment /exec)
+  const APP = 'https://script.google.com/macros/s/AKfycbwlYFR7xdGVghj6iu-LtPJhihE4kPDhjLmHbKKO1HuBPsmgCKc8fQusrDhRNS5jK9Ly/exec';
+  const q = new URLSearchParams(location.hash.slice(1));
+  const X = { codice: q.get('o') || '', nome: q.get('n') || '', cantiere: q.get('c') || '', giorno: q.get('g') || '', ore: q.get('h') || '',
+    descrizione: q.get('d') || '', materiale: q.get('m') || '', problemi: q.get('p') || '' };
+  // il codice non resta nella barra dell'indirizzo
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  const $ = function (id) { return document.getElementById(id); };
+  const reg = $('reg'), pronto = $('pronto'), aud = $('aud'), manda = $('manda'), rifai = $('rifai'), esito = $('esito'), oreI = $('ore');
+  let rec = null, voc = null, t0 = 0, orol = null, lim = null;
+  function bello(s) { return String(s).toLowerCase().replace(/(^|\s)\S/g, function (x) { return x.toUpperCase(); }); }
+  function ms(s) { s = Math.round(s); return Math.floor(s / 60) + ':' + ('0' + s % 60).slice(-2); }
+  function di(c, t) { esito.style.display = ''; esito.className = 's ' + c; esito.textContent = t; }
+
+  if (!X.codice || !X.cantiere || !/^\d{4}-\d{2}-\d{2}$/.test(X.giorno)) {
+    reg.style.display = 'none';
+    di('ko', 'Apri questa pagina dal tasto «DILLO A VOCE» dell\'app BBC Presenze.');
+    return;
+  }
+  $('chi').textContent = X.nome;
+  $('dove').textContent = bello(X.cantiere);
+  if (Number(X.ore) > 0) oreI.value = X.ore;
+
+  reg.onclick = async function () {
+    if (rec) { rec.stop(); return; }
+    if (!window.MediaRecorder || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      di('ko', 'Questo telefono non registra dalla pagina: torna all\'app e nel riquadro «Cosa hai fatto» tocca il microfono della tastiera.');
+      return;
+    }
+    let fl;
+    try {
+      fl = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      di('ko', 'Il microfono non è permesso (' + (e.name || e) + '). iPhone: Impostazioni > App > Safari > Microfono: «Chiedi». Android: tocca il lucchetto accanto all\'indirizzo > Autorizzazioni > Microfono. Poi riprova.');
+      return;
+    }
+    const tipo = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', 'audio/ogg;codecs=opus']
+      .filter(function (t) { return MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t); })[0] || '';
+    const o = { audioBitsPerSecond: 32000 };
+    if (tipo) o.mimeType = tipo;
+    const r = new MediaRecorder(fl, o);
+    const pz = [];
+    t0 = Date.now();
+    r.ondataavailable = function (e) { if (e.data && e.data.size) pz.push(e.data); };
+    orol = setInterval(function () { reg.textContent = '■ FERMA (' + ms((Date.now() - t0) / 1000) + ')'; }, 500);
+    lim = setTimeout(function () { if (r.state !== 'inactive') r.stop(); }, 180000);
+    r.onstop = function () {
+      clearInterval(orol); clearTimeout(lim);
+      fl.getTracks().forEach(function (t) { t.stop(); });
+      rec = null;
+      reg.className = '';
+      reg.textContent = '🎤 REGISTRA';
+      const b = new Blob(pz, { type: r.mimeType || tipo || 'audio/webm' });
+      if (!b.size) { di('ko', 'Il vocale è vuoto: riprova.'); return; }
+      const fr = new FileReader();
+      fr.onload = function () {
+        voc = { formato: b.type.split(';')[0], dati: String(fr.result).split(',')[1], durata: (Date.now() - t0) / 1000 };
+        aud.src = URL.createObjectURL(b);
+        reg.style.display = 'none';
+        pronto.style.display = '';
+        esito.style.display = 'none';
+      };
+      fr.readAsDataURL(b);
+    };
+    r.start(1000);
+    rec = r;
+    reg.className = 'r';
+    reg.textContent = '■ FERMA (0:00)';
+  };
+
+  rifai.onclick = function () { voc = null; pronto.style.display = 'none'; reg.style.display = ''; reg.onclick(); };
+
+  manda.onclick = async function () {
+    if (!voc) return;
+    const ore = Number(String(oreI.value).replace(',', '.')) || 0;
+    if (!(ore > 0)) { di('ko', 'Scrivi quante ore hai lavorato oggi (in alto).'); oreI.focus(); return; }
+    manda.disabled = rifai.disabled = true;
+    di('', 'Mando il vocale… può volerci qualche secondo.');
+    try {
+      // corpo in testo semplice: cosi' Google risponde senza controlli in piu' (niente richiesta preliminare)
+      const risp = await fetch(APP, { method: 'POST', body: JSON.stringify({ o: X.codice, g: {
+        giorno: X.giorno, cantiere: X.cantiere, righe: [{ lavorazione: '', ore: ore }],
+        descrizione: X.descrizione, materiale: X.materiale, problemi: X.problemi, vocale: voc } }) });
+      const j = await risp.json();
+      if (!j.ok) throw new Error(j.errore || 'risposta sbagliata');
+      pronto.style.display = 'none';
+      di('ok', 'Vocale mandato ✓ Ora torna all\'app BBC Presenze.');
+      try { if (window.opener) window.opener.postMessage('bbc-giornale-mandato', '*'); } catch (e) {}
+    } catch (e) {
+      manda.disabled = rifai.disabled = false;
+      di('ko', 'Non mandato: ' + (e.message || e) + '. Se non c\'è rete riprova quando c\'è linea.');
+    }
+  };
+})();
+</script>
+</body>
+</html>
