@@ -4,7 +4,8 @@
      (non dentro il riquadro di Google, che non da' il microfono): la apre il tasto
      «DILLO A VOCE» dell'app con i dati dopo il # (operaio, cantiere, giorno, ore), che
      non vengono mandati al sito. Registra e manda il giornale al foglio «BBC Presenze»
-     con un POST all'indirizzo /exec (doPost con il codice dell'operaio). -->
+     con un POST all'indirizzo /exec (doPost con il codice dell'operaio). Aperta dalla
+     pagina dell'ufficio (codice u) registra il riepilogo della giornata detto da Christian. -->
 <html lang="it">
 <head>
 <meta charset="utf-8">
@@ -33,10 +34,10 @@
   <h1>BBC</h1>
   <div class="s">
     <b id="chi"></b><div class="n" id="dove"></div>
-    <label class="n" style="display:block;margin-top:10px">Ore lavorate oggi in questo cantiere<br>
+    <label class="n" id="etOre" style="display:block;margin-top:10px">Ore lavorate oggi in questo cantiere<br>
       <input id="ore" type="number" step="0.25" min="0.25" max="12" inputmode="decimal"></label>
   </div>
-  <div class="n">Di' cosa hai fatto oggi e quante ore per ogni lavoro (per esempio: «4 ore massetto, 4 ore piastrelle al bagno»). Se manca materiale, dillo. Massimo 3 minuti.</div>
+  <div class="n" id="istruzioni">Di' cosa hai fatto oggi e quante ore per ogni lavoro (per esempio: «4 ore massetto, 4 ore piastrelle al bagno»). Se manca materiale, dillo. Massimo 3 minuti.</div>
   <button id="reg">🎤 REGISTRA</button>
   <div id="pronto" style="display:none">
     <audio id="aud" controls></audio>
@@ -50,7 +51,8 @@
   // indirizzo dell'app BBC Presenze (foglio Google «BBC Presenze», deployment /exec)
   const APP = 'https://script.google.com/macros/s/AKfycbwlYFR7xdGVghj6iu-LtPJhihE4kPDhjLmHbKKO1HuBPsmgCKc8fQusrDhRNS5jK9Ly/exec';
   const q = new URLSearchParams(location.hash.slice(1));
-  const X = { codice: q.get('o') || '', nome: q.get('n') || '', cantiere: q.get('c') || '', giorno: q.get('g') || '', ore: q.get('h') || '',
+  // o = codice dell'operaio (giornale); u = codice dell'ufficio (riepilogo di Christian della giornata)
+  const X = { codice: q.get('o') || '', ufficio: q.get('u') || '', nome: q.get('n') || '', cantiere: q.get('c') || '', giorno: q.get('g') || '', ore: q.get('h') || '',
     descrizione: q.get('d') || '', materiale: q.get('m') || '', problemi: q.get('p') || '' };
   // il codice non resta nella barra dell'indirizzo
   try { history.replaceState(null, '', location.pathname); } catch (e) {}
@@ -61,13 +63,18 @@
   function ms(s) { s = Math.round(s); return Math.floor(s / 60) + ':' + ('0' + s % 60).slice(-2); }
   function di(c, t) { esito.style.display = ''; esito.className = 's ' + c; esito.textContent = t; }
 
-  if (!X.codice || !X.cantiere || !/^\d{4}-\d{2}-\d{2}$/.test(X.giorno)) {
+  if (!(X.codice || X.ufficio) || !X.cantiere || !/^\d{4}-\d{2}-\d{2}$/.test(X.giorno)) {
     reg.style.display = 'none';
     di('ko', 'Apri questa pagina dal tasto «DILLO A VOCE» dell\'app BBC Presenze.');
     return;
   }
   $('chi').textContent = X.nome;
-  $('dove').textContent = bello(X.cantiere);
+  const p = X.giorno.split('-');
+  $('dove').textContent = bello(X.cantiere) + (X.ufficio ? ' · giornata del ' + p[2] + '/' + p[1] : '');
+  if (X.ufficio) {
+    $('etOre').style.display = 'none';
+    $('istruzioni').textContent = 'Detta il riepilogo della giornata: com\'era il tempo, chi è venuto in cantiere, materiali arrivati, problemi e cosa si fa domani (il programma). Massimo 3 minuti.';
+  }
   if (Number(X.ore) > 0) oreI.value = X.ore;
 
   reg.onclick = async function () {
@@ -122,14 +129,16 @@
   manda.onclick = async function () {
     if (!voc) return;
     const ore = Number(String(oreI.value).replace(',', '.')) || 0;
-    if (!(ore > 0)) { di('ko', 'Scrivi quante ore hai lavorato oggi (in alto).'); oreI.focus(); return; }
+    if (!X.ufficio && !(ore > 0)) { di('ko', 'Scrivi quante ore hai lavorato oggi (in alto).'); oreI.focus(); return; }
     manda.disabled = rifai.disabled = true;
     di('', 'Mando il vocale… può volerci qualche secondo.');
     try {
       // corpo in testo semplice: cosi' Google risponde senza controlli in piu' (niente richiesta preliminare)
-      const risp = await fetch(APP, { method: 'POST', body: JSON.stringify({ o: X.codice, g: {
-        giorno: X.giorno, cantiere: X.cantiere, righe: [{ lavorazione: '', ore: ore }],
-        descrizione: X.descrizione, materiale: X.materiale, problemi: X.problemi, vocale: voc } }) });
+      const corpo = X.ufficio
+        ? { u: X.ufficio, g: { giorno: X.giorno, cantiere: X.cantiere, vocale: voc } }
+        : { o: X.codice, g: { giorno: X.giorno, cantiere: X.cantiere, righe: [{ lavorazione: '', ore: ore }],
+            descrizione: X.descrizione, materiale: X.materiale, problemi: X.problemi, vocale: voc } };
+      const risp = await fetch(APP, { method: 'POST', body: JSON.stringify(corpo) });
       const j = await risp.json();
       if (!j.ok) throw new Error(j.errore || 'risposta sbagliata');
       pronto.style.display = 'none';
